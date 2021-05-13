@@ -1,42 +1,145 @@
+// Should use MutationObserver instead of polling but some websites make it
+// a pain (e.g. favicon dynamically loaded)
+var REFRESH_INTERVAL = 75
 
-// Stick to the same favicon + no notification in status bar for Notion
+
+var pageCss = (function() {
+  function getAllCssRules() {
+    return [...document.styleSheets]
+    .map(styleSheet => [...styleSheet.cssRules])
+    .filter(Boolean)
+    .flat();
+  }
+  var CSS_RULES = getAllCssRules();
+
+  var separator = "#####";  // Arbitrary string that is very unlikely to be used by a CSS
+  function __id(selectorText, prop) {
+    return selectorText + separator + prop;
+  }
+
+  var res = {};
+  var overriden = {};
+
+  res.__overrideRule = function(selectorText, prop, value) {
+
+
+    var rule = CSS_RULES.find(rule => rule.selectorText == selectorText);
+    var ruleId = __id(selectorText, prop);
+
+    if (!overriden[ruleId]) {
+      overriden[ruleId] = rule.style[prop];
+    }
+
+    rule.style[prop] = value;
+  };
+
+  res.overrideRule = function(selectorText, prop, value) {
+    try {
+      res.__overrideRule(selectorText, prop, value);
+    } catch (e) {
+      // Of course it could fail in a different way but CSS not fully loaded is
+      // the one we want to catch here
+      CSS_RULES = getAllCssRules();
+      setTimeout(res.overrideRule.bind(res, selectorText, prop, value), REFRESH_INTERVAL);
+    }
+  };
+
+  res.restoreRule = function(selectorText, prop) {
+    var rule = CSS_RULES.find(rule => rule.selectorText == selectorText);
+    var ruleId = __id(selectorText, prop);
+
+    rule.style[prop] = overriden[ruleId];
+  };
+
+  return res;
+})();
+
+
+/**
+ * Force page to use the supplied faviconFile
+ * Prevents both websites that update favicons (e.g. Slack) and websites
+ * that allow different favicons for the same kind of resources (e.g. Notion)
+ */
+function forceFavicon(faviconFile) {
+  var faviconUrl = chrome.extension.getURL(faviconFile);
+  var favicon;
+
+  setInterval(function () {
+    if (!favicon) { favicon = document.querySelector('link[rel*="icon"]'); }
+    if (favicon) { favicon.href = faviconUrl; }
+  }, REFRESH_INTERVAL);
+}
+
+
+/**
+ * Prevent notification number from appearing in the title
+ * Remove all supplied characters as well
+ */
+function noNotificationInTitle(_unneededStrings) {
+  var title = document.querySelector("title");
+  var unneededStrings = _unneededStrings || [];
+
+  setInterval(function () {
+    title.textContent = title.textContent.replace(/\([0-9]+\+?\) /, "");
+    unneededStrings.forEach(s => title.textContent = title.textContent.split(s).join(""));
+  }, REFRESH_INTERVAL);
+}
+
+
 if (location.href.startsWith("https://www.notion.so/")) {
-  var notionTitle = document.querySelector("title");
-  var notionIcon = 'images/notion.ico';
-  var notionIconUrl = chrome.extension.getURL(notionIcon);
-
-  setInterval(function () {
-    notionTitle.textContent = notionTitle.textContent.replace(/\([0-9]+\+?\) /, "");
-    document.querySelector('link[rel*="icon"]').href = notionIconUrl;
-  }, 150);
+  forceFavicon('images/notion.ico');
+  noNotificationInTitle();
 }
 
 
-
-
-// No unread email notification in title
 if (location.href.startsWith("https://mail.google.com/")) {
-  var gmailTitle = document.querySelector("title");
-
-  setInterval(function () {
-    gmailTitle.textContent = gmailTitle.textContent.replace(/\([0-9]+\) /, "");
-  }, 150);
+  noNotificationInTitle();
 }
 
 
+// No notification on Paper (what use do they serve anyway???)
+if (location.href.startsWith("https://paper.dropbox.com/")) {
+  var paperNotif = document.querySelector(".hp-notifications-badge");
+
+  setInterval(function () {
+    paperNotif.style.display = "none";
+  }, REFRESH_INTERVAL);
+
+}
 
 
-// No Slack notification on favicon or title bar
-if (location.host === "app.slack.com") {
-  var file = 'images/slack.png';
-  var url = chrome.extension.getURL(file);
-  var slackTitle = document.querySelector("title");
+if (location.href.startsWith("https://app.slack.com/")) {
+  pageCss.overrideRule('.p-channel_sidebar__list', 'display', 'none');
+  pageCss.overrideRule('.c-mention_badge', 'display', 'none');
+  pageCss.overrideRule('.c-search_autocomplete__unread_count', 'display', 'none');
 
-  setInterval(function() {
-    slackTitle.textContent = slackTitle.textContent.replace(/\* /g, "");
-    slackTitle.textContent = slackTitle.textContent.replace(/! /g, "");
-    document.querySelector('link[rel*="icon"]').href = url;
-  }, 150)
+  var restoreButton = document.createElement("button");
+  restoreButton.classList.add("c-button");
+  restoreButton.classList.add("c-button--outline");
+  restoreButton.classList.add("c-button--medium");
+  restoreButton.style.margin = "8px";
+  restoreButton.innerHTML = "Reactivate sidebar and badges";
+  restoreButton.addEventListener("click", restoreSlack);
+
+  function restoreSlack() {
+    pageCss.restoreRule('.p-channel_sidebar__list', 'display');
+    pageCss.restoreRule('.c-mention_badge', 'display');
+    pageCss.restoreRule('.c-search_autocomplete__unread_count', 'display');
+    restoreButton.style.display = "none";  // TODO: remove from DOM
+  }
+
+  function insertRestoreButton() {
+    var sidebar = document.querySelector(".p-channel_sidebar");
+    if (!sidebar) {
+      setTimeout(insertRestoreButton, REFRESH_INTERVAL);
+    } else {
+      sidebar.prepend(restoreButton);
+    }
+  }
+  insertRestoreButton();
+
+  forceFavicon('images/slack_calm.png');
+  noNotificationInTitle(["* ", "! "]);
 }
 
 
@@ -103,15 +206,7 @@ if (location.href.match(/^https:\/\/linkedin.com\/?$|^https:\/\/www\.linkedin\.c
 
 
 if (location.href.startsWith("https://www.linkedin.com/")) {
-
-  // LinkedIn title notification
-  var linkedInTitle = document.querySelector("title");
-
-  setInterval(function () {
-    console.log("ZEREZ");
-    linkedInTitle.textContent = linkedInTitle.textContent.replace(/\([0-9]+\) /, "");
-  }, 150);
-
+  noNotificationInTitle();
 }
 
 
